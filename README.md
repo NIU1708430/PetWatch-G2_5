@@ -12,3 +12,8 @@ Multiple Google Cloud services are used in this project:
 - Cloud Run
 - Cloud Storage
 - Cloud Firebase
+
+## Authors: 
+Junjie Liu - 1708478
+Joel Rillo - 1708430
+Elías Pascual - 1672946
