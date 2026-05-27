@@ -6,4 +6,4 @@ ultralytics
 torch
 torchvision
 Pillow
-picamera2
+google-cloud-firestore
