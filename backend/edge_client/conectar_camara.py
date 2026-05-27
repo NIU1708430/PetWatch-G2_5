@@ -69,8 +69,8 @@ def main():
                 print(f"Error al enviar a Pub/Sub: {pub_error}")
 
 
-            # Enviar 1 fotograma por segundo
-            time.sleep(1)
+            # tiempo entre fotograma y fotograma
+            time.sleep(0.01)
 
 
     except KeyboardInterrupt:
@@ -91,78 +91,6 @@ if __name__ == "__main__":
 
 
 """
-import time
-import io
-from google.cloud import pubsub_v1
-from picamera2 import Picamera2 # La librería moderna oficial para Raspberry Pi
-
-# ================= CONFIGURACIÓN =================
-PROJECT_ID = "petwatch-sm"
-TOPIC_ID = "petwatch-video-stream"
-# =================================================
-
-def main():
-    print("==================================================")
-    print("      PETWATCH CLOUD - TRANSMISIÓN EDGE            ")
-    print("==================================================")
-
-    # 1. Conexión con Google Cloud Pub/Sub
-    print("Conectando con Google Cloud Pub/Sub...")
-    try:
-        publisher = pubsub_v1.PublisherClient()
-        topic_path = publisher.topic_path(PROJECT_ID, TOPIC_ID)
-        print("-> Conexión establecida correctamente.")
-    except Exception as e:
-        print(f"Error al conectar con Pub/Sub: {e}")
-        return
-
-    # 2. Inicialización de Picamera2
-    print("Iniciando Raspberry Pi Camera Module v2 con Picamera2...")
-    try:
-        picam2 = Picamera2()
-        
-        # Configuramos la resolución directamente a 640x480 en formato JPEG
-        picam2.configure(picam2.create_video_configuration(
-            main={"format": "JPEG", "size": (640, 480)}
-        ))
-        
-        picam2.start()
-        print("\n[OK] Cámara v2 lista mediante Picamera2 y transmitiendo.")
-        print("--> Para detener la transmisión, pulsa Ctrl + C en esta terminal.")
-        print("==================================================\n")
-    except Exception as cam_error:
-        print(f"Error: No se pudo inicializar la cámara con Picamera2. {cam_error}")
-        return
-
-    try:
-        while True:
-            # Capturar un fotograma directamente en memoria como bytes JPEG
-            img_bytes = picam2.capture_array("main")
-
-            try:
-                # Enviar los bytes directamente a Google Cloud Pub/Sub
-                future = publisher.publish(topic_path, img_bytes)
-                print(f"[{time.strftime('%H:%M:%S')}] Fotograma enviado con éxito. ID: {future.result()}")
-            except Exception as pub_error:
-                print(f"Error al enviar a Pub/Sub: {pub_error}")
-
-            # Enviar 1 fotograma por segundo
-            time.sleep(1)
-
-    except KeyboardInterrupt:
-        print("\nTransmisión detenida de forma manual desde la terminal.")
-    finally:
-        # Cerrar la cámara de forma segura
-        picam2.stop()
-        print("Cámara apagada correctamente. ¡Proyecto cerrado!")
-
-if __name__ == "__main__":
-    main()
-
-
-
-
-
 import cv2
 import time
 import base64
@@ -190,7 +118,7 @@ def main():
 
     # 2. Inicialización de la cámara con OpenCV
     print("Iniciando cámara web...")
-    cap = cv2.VideoCapture(-1)  # El 0 activa la cámara integrada de tu ordenador
+    cap = cv2.VideoCapture(0)  # El 0 activa la cámara integrada de tu ordenador
 
     if not cap.isOpened():
         print("Error: No se ha detectado ninguna cámara activa.")
@@ -242,4 +170,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 """
