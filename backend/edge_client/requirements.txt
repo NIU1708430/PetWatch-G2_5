@@ -1,2 +1,3 @@
 opencv-python
 google-cloud-pubsub
+picamera2
