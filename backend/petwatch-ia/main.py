@@ -2,11 +2,13 @@ import base64
 import cv2
 import numpy as np
 import functions_framework
+from google.cloud import firestore
 
-# Importamos vuestros "trabajadores"
 from yolo_detector import detectar_animal
 from pose_estimator import estimar_esqueleto
 # from heuristics import clasificar_postura  
+
+db = firestore.Client(project="petwatch-sm", database="petwatch-db")
 
 @functions_framework.cloud_event
 def procesar_ia_mascotas(cloud_event):
@@ -32,23 +34,38 @@ def procesar_ia_mascotas(cloud_event):
     print("Fotograma recibido. Iniciando Pipeline de IA...")
 
     # 3. PASO 1: LOCALIZAR CON YOLO
-    caja_animal = detectar_animal(frame_completo) 
+    resultado_yolo = detectar_animal(frame_completo) 
 
-    if caja_animal is None:
+    if resultado_yolo is None:
         return 
+
+    # Desempaquetamos la caja y el nombre del animal
+    caja_animal, tipo_animal = resultado_yolo
 
     # 4. PASO 2: RECORTAR (CROPPING)
     x1, y1, x2, y2 = caja_animal
-    recorte_mascota = frame_completo[y1:y2, x1:x2]
+    recorte_mascota = frame_completo[y1:y2, x1:x2]   # <-- ¡FALTA ESTA LÍNEA!
 
     # 5. PASO 3: ESQUELETO CON RESNET
     puntos_clave = estimar_esqueleto(recorte_mascota)
-
     if puntos_clave is None:
         return
 
-    # 6. PASO 4: HEURÍSTICA (Adivinar la acción)
+    # 6. PASO 4: HEURÍSTICA 
     from heuristics import analizar_postura
     accion = analizar_postura(puntos_clave)
-    
-    print(f"¡RESULTADO FINAL! La mascota está: {accion}")
+
+    print(f"¡RESULTADO FINAL! Detectado {tipo_animal} que está: {accion}")
+  
+    # 7. GUARDAR EN FIRESTORE 
+    datos_mascota = {
+        "animal": tipo_animal, 
+        "postura": accion,
+        "fecha_hora": firestore.SERVER_TIMESTAMP
+    }
+
+    try:
+        db.collection("historial_mascotas").add(datos_mascota)
+        print("Guardado en Firestore correctamente.")
+    except Exception as e:
+        print(f"Error al guardar en Firestore: {e}")

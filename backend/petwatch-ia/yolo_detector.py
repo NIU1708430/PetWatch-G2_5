@@ -6,7 +6,7 @@ BUCKET_NAME = "petwatch_modelos_ia"
 MODEL_FILE_NAME = "modelo4.pt"  
 # =================================================
 
-# Variable global para mantener el modelo cargado entre peticiones (¡Ahorra dinero!)
+# Variable global para mantener el modelo cargado entre peticiones 
 model = None
 LOCAL_MODEL_PATH = f"/tmp/{MODEL_FILE_NAME}"
 
@@ -17,8 +17,7 @@ def descargar_modelo_yolo():
     """
     global model
     if model is None:
-        # Importamos ultralytics SOLO cuando la función se ejecuta por primera vez
-        # para que la Cloud Function no gaste memoria inicializando si no hace falta.
+        # Importamos ultralytics solo cuando la función se ejecuta por primera vez
         from ultralytics import YOLO
         
         print(f"[YOLO] Descargando {MODEL_FILE_NAME} desde el bucket {BUCKET_NAME}...")
@@ -51,14 +50,13 @@ def detectar_animal(frame):
         resultados = model(frame, conf=0.5)
 
         # 3. Analizar la respuesta de YOLO
-        # Iteramos sobre los resultados (normalmente solo hay 1 imagen a la vez)
         for resultado in resultados:
             if hasattr(resultado, 'boxes') and len(resultado.boxes) > 0:
                 
-                # Cogemos solo el primer animal que detecte (por si hay varios, nos quedamos el principal)
+                # Cogemos solo el primer animal que detecte 
                 caja_principal = resultado.boxes[0]
                 
-                # Datos extra (para imprimir en los logs y saber qué ha visto)
+                # Datos extra 
                 clase_id = int(caja_principal.cls[0])
                 nombre_clase = model.names[clase_id]
                 confianza = float(caja_principal.conf[0]) * 100
@@ -70,7 +68,7 @@ def detectar_animal(frame):
                 print(f"[YOLO] ¡Mascota Localizada! -> {nombre_clase.upper()} al {confianza:.1f}%. Caja: [{x1}, {y1}, {x2}, {y2}]")
                 
                 # 4. Devolvemos las coordenadas al 'main.py' para que haga el recorte
-                return [x1, y1, x2, y2]
+                return [x1, y1, x2, y2], nombre_clase
 
         print("[YOLO] La habitación parece estar vacía (No se superó el 50% de confianza).")
         return None

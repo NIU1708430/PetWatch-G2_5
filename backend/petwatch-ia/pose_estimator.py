@@ -36,7 +36,7 @@ def descargar_modelo_resnet():
         blob = bucket.blob(MODEL_FILE_NAME)
         blob.download_to_filename(LOCAL_MODEL_PATH)
         
-        # Instanciar el modelo vacío y cargarle vuestros pesos
+        # Instanciar el modelo vacío y cargarle los pesos
         modelo_pose = SimplePoseModel(num_keypoints=NUM_KEYPOINTS)
         modelo_pose.load_state_dict(torch.load(LOCAL_MODEL_PATH, map_location=device))
         modelo_pose.to(device).eval()
@@ -52,14 +52,14 @@ def estimar_esqueleto(imagen_recortada):
         return None
 
     try:
-        # Preprocesar la imagen OpenCV (BGR) a formato PIL (RGB) para vuestras transformaciones
+        # Preprocesar la imagen OpenCV (BGR) a formato PIL (RGB) 
         img_pil = Image.fromarray(cv2.cvtColor(imagen_recortada, cv2.COLOR_BGR2RGB))
         img_tensor = transform_modelo(img_pil).unsqueeze(0).to(device)
         
         # Inferencia
         with torch.no_grad():
             output = modelo_pose(img_tensor)
-            # Extraemos la matriz (17, 2) que vuestra heurística espera
+            # Extraemos la matriz (17, 2) 
             points_norm = output.cpu().view(NUM_KEYPOINTS, 2).numpy()
             
         return points_norm
