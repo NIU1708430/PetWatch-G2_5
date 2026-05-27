@@ -1,5 +1,6 @@
 import time
 import cv2  # Usaremos cv2 solo para comprimir el fotograma a JPG en memoria
+import subprocess
 from google.cloud import pubsub_v1
 from picamera2 import Picamera2
 
@@ -7,6 +8,10 @@ from picamera2 import Picamera2
 # ================= CONFIGURACIÓN =================
 PROJECT_ID = "petwatch-sm"
 TOPIC_ID = "petwatch-video-stream"
+RTSP_URL = "rtsp://localhost:8554/mascota"
+ANCHO = 640
+ALTO = 480
+FPS = 25
 # =================================================
 
 
@@ -26,8 +31,35 @@ def main():
         print(f"Error al conectar con Pub/Sub: {e}")
         return
 
+    # 2. Configurar FFmpeg
+    # Mezcla el audio del micrófono físico con los fotogramas que le mande Python
+    print("Iniciando codificador multimedia (Vídeo + Audio)...")
+    ffmpeg_cmd = [
+        'ffmpeg', '-y',
 
-    # 2. Inicialización de Picamera2
+        # Esto es para audio, cuando tengamos el micro funcionando se tiene que descomentar
+        #'-f', 'alsa', '-i', 'default',       # Captura el audio del micrófono de la Pi
+        
+        '-f', 'rawvideo', '-vcodec', 'rawvideo',
+        '-pix_fmt', 'bgr24',                 # Formato nativo de OpenCV
+        '-s', f'{ANCHO}x{ALTO}', '-r', str(FPS),
+        '-i', '-',                           # Recibe los fotogramas por la tubería (stdin)
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+
+        # Cuando tengamos micro hay que eliminar el -an y descomentar lo de debajo
+        '-an',
+        #'-c:a', 'aac', '-b:a', '64k',
+
+        '-f', 'rtsp', RTSP_URL               # Lo inyecta en MediaMTX
+    ]
+    try:
+        proceso_stream = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
+        print("-> Codificador listo y conectado a MediaMTX.")
+    except Exception as e:
+        print(f"Error al iniciar FFmpeg (¿Está MediaMTX corriendo?): {e}")
+        return
+
+    # 3. Inicialización de Picamera2
     print("Iniciando Raspberry Pi Camera Module v2 con Picamera2...")
     try:
         picam2 = Picamera2()
@@ -45,6 +77,7 @@ def main():
         print(f"Error: No se pudo inicializar la cámara con Picamera2. {cam_error}")
         return
 
+    ultimo_envio_ia = 0.0
 
     try:
         while True:
@@ -56,17 +89,27 @@ def main():
             frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
 
 
-            # Comprimir la imagen a formato JPG para que viaje rápido por internet
-            _, buffer = cv2.imencode('.jpg', frame_bgr)
-            img_bytes = buffer.tobytes()
-
-
             try:
-                # Enviar los bytes comprimidos directamente a Google Cloud Pub/Sub
-                future = publisher.publish(topic_path, img_bytes)
-                print(f"[{time.strftime('%H:%M:%S')}] Fotograma enviado con éxito. ID: {future.result()}")
-            except Exception as pub_error:
-                print(f"Error al enviar a Pub/Sub: {pub_error}")
+                # Enviar los pixeles puros a FFmpeg para el streaming
+                proceso_stream.stdin.write(frame_bgr.tobytes())
+            except Exception as stream_error:
+                print(f"Error en el stream en directo: {stream_error}")
+
+
+            tiempo_actual = time.time()
+            if tiempo_actual - ultimo_envio_ia >= 1.0:
+                # Comprimir la imagen a formato JPG para que viaje rápido por internet
+                _, buffer = cv2.imencode('.jpg', frame_bgr)
+                img_bytes = buffer.tobytes()
+
+
+                try:
+                    # Enviar los bytes comprimidos directamente a Google Cloud Pub/Sub
+                    future = publisher.publish(topic_path, img_bytes)
+                    print(f"[{time.strftime('%H:%M:%S')}] Fotograma enviado con éxito. ID: {future.result()}")
+                    ultimo_envio_ia = tiempo_actual
+                except Exception as pub_error:
+                    print(f"Error al enviar a Pub/Sub: {pub_error}")
 
 
             # tiempo entre fotograma y fotograma
@@ -78,6 +121,9 @@ def main():
     finally:
         # Cerrar la cámara de forma segura
         picam2.stop()
+        if proceso_stream:
+            proceso_stream.stdin.close()
+            proceso_stream.wait()
         print("Cámara apagada correctamente. ¡Proyecto cerrado!")
 
 
