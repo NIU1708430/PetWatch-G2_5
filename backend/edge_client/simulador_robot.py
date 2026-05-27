@@ -1,38 +1,42 @@
-import base64
-import json
-import requests
+import os
+from google.cloud import pubsub_v1
 
-URL_LOCAL = "http://localhost:8080"
-RUTA_FOTO = "perro_prueba.jpg"
+# ================= CONFIGURACIÓN =================
+PROJECT_ID = "petwatch-sm"
+TOPIC_ID = "petwatch-video-stream"
+IMAGE_PATH = "perro_prueba.jpg"  
+# =================================================
 
-def simular_envio():
+def main():
+    print("==================================================")
+    print("      PETWATCH CLOUD - SIMULADOR EDGE             ")
+    print("==================================================")
+    
+    print(f"📡 Preparando simulador con la imagen: {IMAGE_PATH}")
+    
+    # 1. Verificar que la imagen existe
+    if not os.path.exists(IMAGE_PATH):
+        print(f"Error: No encuentro el archivo '{IMAGE_PATH}' en esta carpeta.")
+        return
+
+    # 2. Leer la imagen directamente como bytes
+    print("Empaquetando la foto...")
+    with open(IMAGE_PATH, "rb") as image_file:
+        image_bytes = image_file.read()
+        
+    # 3. Conectar a Pub/Sub
+    print("Conectando con Google Cloud Pub/Sub...")
     try:
-        # 1. Leer la foto del disco duro
-        with open(RUTA_FOTO, "rb") as image_file:
-            foto_bytes = image_file.read()
-            
-        # 2. Convertir la foto a texto Base64 
-        foto_base64 = base64.b64encode(foto_bytes).decode("utf-8")
+        publisher = pubsub_v1.PublisherClient()
+        topic_path = publisher.topic_path(PROJECT_ID, TOPIC_ID)
         
-        # 3. Crear el "disfraz" de Google Pub/Sub
-        payload_pubsub = {
-            "message": {
-                "data": foto_base64,
-                "messageId": "simulacion_local_001",
-                "publishTime": "2026-05-26T18:00:00.000Z"
-            }
-        }
-        
-        # 4. Disparar el mensaje hacia nuestro servidor local
-        print(f"📡 Enviando '{RUTA_FOTO}' al servidor local...")
-        respuesta = requests.post(URL_LOCAL, json=payload_pubsub)
-        
-        print(f"Respuesta del servidor: HTTP {respuesta.status_code}")
-        
-    except FileNotFoundError:
-        print(f"Error: No se encuentra la foto '{RUTA_FOTO}' en esta carpeta.")
+        # 4. Enviar la imagen al buzón
+        future = publisher.publish(topic_path, image_bytes)
+        print(f"¡Fotograma enviado con éxito a la nube! ID: {future.result()}")
+        print("==================================================")
+        print("Ve a los registros de Google Cloud Run para ver qué piensa la IA.")
     except Exception as e:
-        print(f"Error al enviar: {e}")
+        print(f"Error al conectar o enviar a Pub/Sub: {e}")
 
 if __name__ == "__main__":
-    simular_envio()
+    main()

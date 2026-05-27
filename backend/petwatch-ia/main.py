@@ -6,7 +6,7 @@ import functions_framework
 # Importamos vuestros "trabajadores"
 from yolo_detector import detectar_animal
 from pose_estimator import estimar_esqueleto
-# from heuristics import clasificar_postura  <-- Descomentar cuando la tengáis subida
+# from heuristics import clasificar_postura  
 
 @functions_framework.cloud_event
 def procesar_ia_mascotas(cloud_event):
