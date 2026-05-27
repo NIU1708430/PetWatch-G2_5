@@ -3,15 +3,18 @@ import cv2  # Usaremos cv2 solo para comprimir el fotograma a JPG en memoria
 from google.cloud import pubsub_v1
 from picamera2 import Picamera2
 
+
 # ================= CONFIGURACIÓN =================
 PROJECT_ID = "petwatch-sm"
 TOPIC_ID = "petwatch-video-stream"
 # =================================================
 
+
 def main():
     print("==================================================")
     print("      PETWATCH CLOUD - TRANSMISIÓN EDGE            ")
     print("==================================================")
+
 
     # 1. Conexión con Google Cloud Pub/Sub
     print("Conectando con Google Cloud Pub/Sub...")
@@ -23,16 +26,17 @@ def main():
         print(f"Error al conectar con Pub/Sub: {e}")
         return
 
+
     # 2. Inicialización de Picamera2
     print("Iniciando Raspberry Pi Camera Module v2 con Picamera2...")
     try:
         picam2 = Picamera2()
-        
+       
         # Configuramos la cámara en formato RGB estándar a 640x480
         picam2.configure(picam2.create_video_configuration(
             main={"format": "RGB888", "size": (640, 480)}
         ))
-        
+       
         picam2.start()
         print("\n[OK] Cámara v2 lista mediante Picamera2 y transmitiendo.")
         print("--> Para detener la transmisión, pulsa Ctrl + C en esta terminal.")
@@ -41,17 +45,21 @@ def main():
         print(f"Error: No se pudo inicializar la cámara con Picamera2. {cam_error}")
         return
 
+
     try:
         while True:
             # Capturar un fotograma directamente en memoria como una matriz RGB
             frame_rgb = picam2.capture_array("main")
 
+
             # Convertir la matriz de RGB a BGR (que es lo que entiende OpenCV)
             frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+
 
             # Comprimir la imagen a formato JPG para que viaje rápido por internet
             _, buffer = cv2.imencode('.jpg', frame_bgr)
             img_bytes = buffer.tobytes()
+
 
             try:
                 # Enviar los bytes comprimidos directamente a Google Cloud Pub/Sub
@@ -60,8 +68,10 @@ def main():
             except Exception as pub_error:
                 print(f"Error al enviar a Pub/Sub: {pub_error}")
 
+
             # Enviar 1 fotograma por segundo
             time.sleep(1)
+
 
     except KeyboardInterrupt:
         print("\nTransmisión detenida de forma manual desde la terminal.")
@@ -70,8 +80,14 @@ def main():
         picam2.stop()
         print("Cámara apagada correctamente. ¡Proyecto cerrado!")
 
+
 if __name__ == "__main__":
     main()
+
+
+
+
+
 
 
 """
