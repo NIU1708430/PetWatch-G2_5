@@ -5,5 +5,9 @@ numpy
 ultralytics
 torch
 torchvision
+<<<<<<< Updated upstream
 Pillow
 google-cloud-firestore
+=======
+Pillow
+>>>>>>> Stashed changes
