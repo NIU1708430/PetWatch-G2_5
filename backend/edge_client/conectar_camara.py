@@ -202,7 +202,7 @@ def main():
             _, buffer = cv2.imencode('.jpg', frame_resized)
             
             try:
-                # Enviar los bytes directamente (Pub/Sub lo envuelve en Base64 por nosotros)
+                # Enviar los bytes directamente 
                 future = publisher.publish(topic_path, buffer.tobytes())
                 print(f"[{time.strftime('%H:%M:%S')}] Fotograma enviado con éxito. ID: {future.result()}")
             except Exception as pub_error:
