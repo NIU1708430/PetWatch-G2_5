@@ -5,3 +5,4 @@ numpy
 ultralytics
 torch
 torchvision
+Pillow

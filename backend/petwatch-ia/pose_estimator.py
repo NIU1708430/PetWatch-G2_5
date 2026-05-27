@@ -17,7 +17,6 @@ NUM_KEYPOINTS = 17
 modelo_pose = None
 LOCAL_MODEL_PATH = f"/tmp/{MODEL_FILE_NAME}"
 
-# En la nube normalmente usamos CPU, pero lo dejamos preparado por si acaso
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Transformaciones que teníais en vuestro código
