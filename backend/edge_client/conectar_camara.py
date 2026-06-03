@@ -97,7 +97,7 @@ def main():
 
 
             tiempo_actual = time.time()
-            if tiempo_actual - ultimo_envio_ia >= 1.0:
+            if tiempo_actual - ultimo_envio_ia >= 0.2:
                 # Comprimir la imagen a formato JPG para que viaje rápido por internet
                 _, buffer = cv2.imencode('.jpg', frame_bgr)
                 img_bytes = buffer.tobytes()
