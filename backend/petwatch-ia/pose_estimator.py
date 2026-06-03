@@ -19,7 +19,7 @@ LOCAL_MODEL_PATH = f"/tmp/{MODEL_FILE_NAME}"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Transformaciones que teníais en vuestro código
+# Transformaciones 
 transform_modelo = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),

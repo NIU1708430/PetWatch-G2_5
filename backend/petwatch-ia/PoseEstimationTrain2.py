@@ -17,7 +17,7 @@ class SimplePoseModel(nn.Module):
         self.backbone = models.resnet50(weights=weights)
         
         # 2. Modificamos la última capa (Fully Connected - fc) para que devuelva
-        # 34 valores (17 keypoints x 2 coordenadas) en lugar de las 1000 clases estándar.
+        # 34 valores (17 keypoints x 2 coordenadas) 
         num_ftrs = self.backbone.fc.in_features
         self.backbone.fc = nn.Linear(num_ftrs, num_keypoints * 2)
 

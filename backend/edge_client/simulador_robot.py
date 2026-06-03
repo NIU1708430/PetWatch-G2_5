@@ -4,7 +4,7 @@ from google.cloud import pubsub_v1
 # ================= CONFIGURACIÓN =================
 PROJECT_ID = "petwatch-sm"
 TOPIC_ID = "petwatch-video-stream"
-IMAGE_PATH = "gato_sentado.jpg"  
+IMAGE_PATH = "perro_prueba.jpg"  
 # =================================================
 
 def main():
@@ -12,7 +12,7 @@ def main():
     print("      PETWATCH CLOUD - SIMULADOR EDGE             ")
     print("==================================================")
     
-    print(f"📡 Preparando simulador con la imagen: {IMAGE_PATH}")
+    print(f"Preparando simulador con la imagen: {IMAGE_PATH}")
     
     # 1. Verificar que la imagen existe
     if not os.path.exists(IMAGE_PATH):

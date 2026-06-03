@@ -57,15 +57,22 @@ def procesar_ia_mascotas(cloud_event):
 
     print(f"¡RESULTADO FINAL! Detectado {tipo_animal} que está: {accion}")
   
+    # Comprimimos el recorte a formato JPG
+    _, buffer = cv2.imencode('.jpg', recorte_mascota)
+    # Lo convertimos a texto Base64 para que quepa en la base de datos
+    img_base64 = base64.b64encode(buffer).decode('utf-8')
+    # --------------------------------------------------------
+
     # 7. GUARDAR EN FIRESTORE 
     datos_mascota = {
         "animal": tipo_animal, 
         "postura": accion,
+        "foto_b64": img_base64,  
         "fecha_hora": firestore.SERVER_TIMESTAMP
     }
 
     try:
         db.collection("historial_mascotas").add(datos_mascota)
-        print("Guardado en Firestore correctamente.")
+        print("Guardado en Firestore correctamente con imagen.")
     except Exception as e:
         print(f"Error al guardar en Firestore: {e}")
