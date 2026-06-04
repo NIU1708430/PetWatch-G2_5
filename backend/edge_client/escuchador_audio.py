@@ -3,17 +3,14 @@ import time
 import os
 import subprocess
 from google.cloud import firestore
-import pygame
-
-# Inicializamos el reproductor de audio
-pygame.mixer.init()
 
 # Conectamos a tu base de datos específica
 db = firestore.Client(project="petwatch-sm", database="petwatch-db")
 
-def reproducir_audio(cambios_docs, objeto_contexto, hora_lectura):
+def reproducir_audio(documentos_totales, cambios, hora_lectura):
     """Se ejecuta AUTOMÁTICAMENTE cada vez que entra un audio nuevo en Firestore"""
-    for cambio in cambios_docs:
+    
+    for cambio in cambios:
         # Solo nos interesan los documentos que se acaban de AÑADIR
         if cambio.type.name == 'ADDED':
             datos = cambio.document.to_dict()
@@ -35,23 +32,20 @@ def reproducir_audio(cambios_docs, objeto_contexto, hora_lectura):
                     
                     try:
                         # --- CONVERSIÓN CON FFMPEG ---
-                        # Transforma el contenedor WebM/Opus de Chrome en un WAV Estándar (PCM 16-bit)
+                        # Forzamos 44100 Hz (frecuencia universal que aceptan el 100% de los altavoces)
                         subprocess.run([
                             'ffmpeg', '-i', archivo_entrada, 
-                            '-acodec', 'pcm_s16le', '-ar', '16000', 
+                            '-acodec', 'pcm_s16le', '-ar', '44100', 
                             archivo_salida, '-y', '-loglevel', 'quiet'
                         ], check=True)
                         
-                        # Reproducir el sonido limpio por los altavoces
-                        pygame.mixer.music.load(archivo_salida)
-                        pygame.mixer.music.play()
-                        while pygame.mixer.music.get_busy():
-                            time.sleep(0.1) # Esperamos a que termine de hablar
-                        pygame.mixer.music.unload()
+                        # --- REPRODUCCIÓN DIRECTA AL AMPLIFICADOR I2S (TARJETA 2) ---
+                        print("🔊 Enviando audio directo a los pines del amplificador (Tarjeta 2)...")
+                        subprocess.run(['aplay', '-D', 'plughw:2,0', archivo_salida], check=True)
                         print("✅ Mensaje emitido por el altavoz.")
                         
                     except subprocess.CalledProcessError:
-                        print("❌ Error: FFMPEG falló al convertir el formato del audio.")
+                        print("❌ Error: FFMPEG o APLAY han fallado en el proceso.")
                     except Exception as audio_error:
                         print(f"❌ Error al reproducir en el altavoz: {audio_error}")
                     finally:
