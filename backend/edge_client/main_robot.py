@@ -90,17 +90,16 @@ def main():
 
     # 3. Configurar FFmpeg Subprocess para el Vídeo en Directo (Hacia MediaMTX)
     print("Iniciando codificador multimedia (Tubería de vídeo)...")
+    # REVERTIDO: Volvemos a la configuración limpia de tu script original 'conectar_camara'
     ffmpeg_cmd = [
         'ffmpeg', '-y',
         '-f', 'rawvideo', '-vcodec', 'rawvideo',
-        '-pix_fmt', 'bgr24',                 # Formato nativo de OpenCV
+        '-pix_fmt', 'bgr24',                 
         '-s', f'{ANCHO}x{ALTO}', '-r', str(FPS),
-        '-i', '-',                           # Recibe los fotogramas por la tubería (stdin)
+        '-i', '-',                           
         '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
-        '-pix_fmt', 'yuv420p',               # CORRECCIÓN: Fuerza formato estándar compatible con RTSP
-        '-rtsp_transport', 'tcp',            # CORRECCIÓN: Fuerza canal seguro TCP para evitar el Bad Request
-        '-an',                               # Desactivado el audio de entrada local por ahora
-        '-f', 'rtsp', RTSP_URL               # Inyección directa en MediaMTX
+        '-an',                               
+        '-f', 'rtsp', RTSP_URL               
     ]
     try:
         proceso_stream = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
@@ -147,7 +146,6 @@ def main():
                 # Enviar los píxeles puros a FFmpeg para el streaming en directo
                 proceso_stream.stdin.write(frame_bgr.tobytes())
             except Exception as stream_error:
-                # Ya no saldrá el molesto bucle infinito si FFmpeg está bien configurado
                 print(f"Error en el stream en directo: {stream_error}")
 
             # Enviar fotogramas comprimidos a la IA cada 0.2 segundos
