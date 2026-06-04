@@ -7,3 +7,4 @@ torch
 torchvision
 Pillow
 google-cloud-firestore
+firebase-admin>=6.5.0

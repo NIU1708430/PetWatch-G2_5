@@ -1,3 +1,5 @@
 opencv-python
 google-cloud-pubsub
 picamera2
+pygame
+google-cloud-firestore

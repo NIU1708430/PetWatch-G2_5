@@ -55,7 +55,7 @@ def main():
                 print(f"Error al enviar a Pub/Sub: {pub_error}")
 
             # Enviar 1 fotograma cada 5 segundos 
-            time.sleep(5)
+            time.sleep(0.2)
 
     except KeyboardInterrupt:
         print("\nTransmisión detenida de forma manual desde la terminal.")

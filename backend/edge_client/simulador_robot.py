@@ -4,7 +4,7 @@ from google.cloud import pubsub_v1
 # ================= CONFIGURACIÓN =================
 PROJECT_ID = "petwatch-sm"
 TOPIC_ID = "petwatch-video-stream"
-IMAGE_PATH = "perro_prueba.jpg"  
+IMAGE_PATH = "perro_prueba2.jpg"  
 # =================================================
 
 def main():
