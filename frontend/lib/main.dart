@@ -125,7 +125,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   }
 }
 
-// --- PESTAÑA 1: EL VÍDEO EN DIRECTO CON WALKIE-TALKIE ---
+// --- PESTAÑA 1: EL VÍDEO EN DIRECTO CON CONTROLES IOT ---
 class LiveViewerBody extends StatefulWidget {
   const LiveViewerBody({super.key});
 
@@ -136,22 +136,60 @@ class LiveViewerBody extends StatefulWidget {
 class _LiveViewerBodyState extends State<LiveViewerBody> {
   final AudioRecorder _grabadorAudio = AudioRecorder();
   bool _grabando = false;
-  bool _botonPulsado = false; // Control de pulsación física
+  bool _botonPulsado = false; 
+  bool _dispensando = false; // Control del botón del servo
 
-  // Función para empezar a grabar al pulsar
+  // ========================================================
+  // LÓGICA DEL PREMIO MANUAL (NUEVA FUNCIÓN)
+  // ========================================================
+  void _dispensarPremioManual() async {
+    setState(() {
+      _dispensando = true;
+    });
+
+    try {
+      await FirebaseFirestore.instanceFor(app: Firebase.app(), databaseId: 'petwatch-db')
+          .collection('comandos_servo')
+          .add({
+        'accion': 'dispensar',
+        'fecha_hora': FieldValue.serverTimestamp(),
+        'completado': false, // El robot pondrá esto en true cuando gire el motor
+      });
+      
+      print("🚀 ¡Comando de premio enviado a Firestore!");
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('¡Premio enviado al robot! 🦴', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      print("❌ Error al enviar premio manual: $e");
+    }
+
+    // Bloqueamos el botón 3 segundos para dar tiempo al motor físico y evitar spam
+    await Future.delayed(const Duration(seconds: 3));
+    if (mounted) {
+      setState(() {
+        _dispensando = false;
+      });
+    }
+  }
+
+  // ========================================================
+  // LÓGICA DEL WALKIE-TALKIE
+  // ========================================================
   void _iniciarGrabacion() async {
-    print("🎯 Botón presionado (Intentando iniciar...)");
-    
-    // CORRECCIÓN: setState inmediato para cambiar a VERDE al milisegundo
     setState(() {
       _botonPulsado = true;
     });
 
     try {
       if (await _grabadorAudio.hasPermission()) {
-        print("🔓 Permiso de micrófono confirmado.");
-        
-        // Si el usuario soltó el botón antes de que el hardware responda, cancelamos
         if (!_botonPulsado) return;
 
         await _grabadorAudio.start(
@@ -162,40 +200,28 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
         setState(() {
           _grabando = true;
         });
-        print("🎤 Grabando audio con éxito...");
 
-        // Si soltó el botón justo mientras se encendía el micro, forzamos el envío inmediato
         if (!_botonPulsado) {
-          print("⏱️ Envío síncrono retrasado activado.");
           _detenerYEnviarGrabacion();
         }
       } else {
-        print("❌ El usuario no dio permiso para usar el micrófono.");
         setState(() {
           _botonPulsado = false;
         });
       }
     } catch (e) {
-      print("❌ Error crítico al iniciar grabación: $e");
       setState(() {
         _botonPulsado = false;
       });
     }
   }
 
-  // Función para detener y subir a Firestore al soltar
   void _detenerYEnviarGrabacion() async {
-    print("🎯 Botón soltado (Intentando procesar audio...)");
-    
-    // CORRECCIÓN: setState inmediato para volver a ROJO al instante
     setState(() {
       _botonPulsado = false;
     });
 
-    if (!_grabando) {
-      print("⏳ Esperando a que el hardware se inicialice por completo...");
-      return;
-    }
+    if (!_grabando) return;
 
     try {
       final rutaBlob = await _grabadorAudio.stop();
@@ -204,11 +230,8 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
       });
 
       if (rutaBlob != null) {
-        print("💾 Audio capturado en el navegador: $rutaBlob");
-        
         final respuesta = await http.get(Uri.parse(rutaBlob));
         final bytesAudio = respuesta.bodyBytes;
-
         String audioBase64 = base64Encode(bytesAudio);
 
         await FirebaseFirestore.instanceFor(app: Firebase.app(), databaseId: 'petwatch-db')
@@ -218,8 +241,6 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
               'fecha_hora': FieldValue.serverTimestamp(),
               'reproducido': false,
             });
-        
-        print("🚀 ¡Audio enviado a Firestore con éxito!");
       }
     } catch (e) {
       print("❌ Error al detener o subir audio: $e");
@@ -275,48 +296,89 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
               ),
             ),
             
-            // --- BOTÓN WALKIE-TALKIE CON RESPUESTA DE COLOR INSTANTÁNEA ---
+            // --- PANEL DE CONTROL: WALKIE-TALKIE Y PREMIO MANUAL ---
             Padding(
-              padding: const EdgeInsets.only(top: 16),
-              child: Listener(
-                behavior: HitTestBehavior.opaque, 
-                onPointerDown: (_) => _iniciarGrabacion(),
-                onPointerUp: (_) => _detenerYEnviarGrabacion(),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 70), // Transición ultra rápida
-                  width: 70,  
-                  height: 70, 
-                  decoration: BoxDecoration(
-                    // MODIFICADO: Color e iluminación reactivos al dedo (_botonPulsado)
-                    color: _botonPulsado ? Colors.green : Colors.red,
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                        color: (_botonPulsado ? Colors.green : Colors.red).withOpacity(0.4), 
-                        blurRadius: 15, 
-                        spreadRadius: _botonPulsado ? 6 : 2
-                      )
+              padding: const EdgeInsets.only(top: 16, bottom: 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  
+                  // BOTÓN 1: WALKIE-TALKIE (Mantenido)
+                  Column(
+                    children: [
+                      Listener(
+                        behavior: HitTestBehavior.opaque, 
+                        onPointerDown: (_) => _iniciarGrabacion(),
+                        onPointerUp: (_) => _detenerYEnviarGrabacion(),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 70), 
+                          width: 70,  
+                          height: 70, 
+                          decoration: BoxDecoration(
+                            color: _botonPulsado ? Colors.green : Colors.red,
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: (_botonPulsado ? Colors.green : Colors.red).withOpacity(0.4), 
+                                blurRadius: 15, 
+                                spreadRadius: _botonPulsado ? 6 : 2
+                              )
+                            ],
+                          ),
+                          child: const Center(
+                            child: Icon(Icons.mic, color: Colors.white, size: 36),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        _botonPulsado ? "¡HABLANDO EN VIVO!" : "Mantén para hablar",
+                        style: TextStyle(color: _botonPulsado ? Colors.green : Colors.white54, fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
                     ],
                   ),
-                  child: const Center(
-                    child: Icon(
-                      Icons.mic, 
-                      color: Colors.white, 
-                      size: 36 
-                    ),
+
+                  // BOTÓN 2: PREMIO MANUAL (Nuevo)
+                  Column(
+                    children: [
+                      GestureDetector(
+                        onTap: _dispensando ? null : _dispensarPremioManual,
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          width: 70,  
+                          height: 70, 
+                          decoration: BoxDecoration(
+                            color: _dispensando ? Colors.grey[700] : Colors.orange,
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: (_dispensando ? Colors.transparent : Colors.orange).withOpacity(0.4), 
+                                blurRadius: 15, 
+                                spreadRadius: _dispensando ? 1 : 2
+                              )
+                            ],
+                          ),
+                          child: Center(
+                            child: _dispensando 
+                              ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                              : const Icon(Icons.pets, color: Colors.white, size: 36),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        _dispensando ? "Enviando..." : "Dar Premio",
+                        style: TextStyle(color: _dispensando ? Colors.white38 : Colors.white54, fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                    ],
                   ),
-                ),
+
+                ],
               ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              // MODIFICADO: Texto reactivo al dedo para sincronía perfecta
-              _botonPulsado ? "¡HABLANDO EN VIVO!" : "Mantén pulsado para hablar",
-              style: TextStyle(color: _botonPulsado ? Colors.green : Colors.white54, fontSize: 12, fontWeight: FontWeight.bold),
             ),
 
             Container(
-              padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 32),
+              padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 32),
               color: Colors.black87,
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -346,7 +408,7 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
   }
 }
 
-// --- PESTAÑA 2: GALERÍA DE FOTOS PERMANENTES ---
+// --- PESTAÑA 2: GALERÍA DE FOTOS PERMANENTES (Sin cambios) ---
 class AlertsGalleryBody extends StatelessWidget {
   const AlertsGalleryBody({super.key});
 
