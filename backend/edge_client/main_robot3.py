@@ -7,7 +7,6 @@ import threading
 from google.cloud import pubsub_v1
 from google.cloud import firestore
 from picamera2 import Picamera2
-from datetime import datetime, timezone, timedelta
 
 # ====================================================================
 # CONFIGURACIÓN DEL HARDWARE (RPi.GPIO para Servomotor)
@@ -47,17 +46,18 @@ FPS = 30
 # ========================================================
 
 # ====================================================================
-# 🔴 CLASE MULTIHILO PARA CÁMARA FLUIDA (Cero tirones)
+# 🔴 CLASE MULTIHILO: CONTROL DE CÁMARA Y STREAMING FFMPEG
 # ====================================================================
 class CameraStream:
-    def __init__(self):
+    def __init__(self, ffmpeg_proc):
         self.picam2 = Picamera2()
         self.picam2.configure(self.picam2.create_video_configuration(
             main={"format": "RGB888", "size": (ANCHO, ALTO)}
         ))
-        self.frame = None
+        self.frame_bgr = None
         self.running = False
         self.lock = threading.Lock()
+        self.ffmpeg_proc = ffmpeg_proc # Inyectamos el proceso de vídeo
 
     def start(self):
         self.picam2.start()
@@ -70,16 +70,26 @@ class CameraStream:
     def update(self):
         while self.running:
             try:
-                img = self.picam2.capture_array("main")
+                # 1. Capturamos al ritmo de hardware exacto de la cámara (30 FPS)
+                frame_rgb = self.picam2.capture_array("main")
+                
+                # 2. Convertimos colores para que OpenCV y FFmpeg los entiendan
+                frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+                
+                # 3. Guardamos la foto en RAM para que la lea la Inteligencia Artificial
                 with self.lock:
-                    self.frame = img
+                    self.frame_bgr = frame_bgr
+                
+                # 4. 🔴 ENVIAMOS A FFMPEG EN ESTE HILO (30 veces por segundo exactas)
+                if self.ffmpeg_proc:
+                    self.ffmpeg_proc.stdin.write(frame_bgr.tobytes())
+                    
             except Exception:
                 pass
-            time.sleep(0.001)
 
     def read(self):
         with self.lock:
-            return self.frame
+            return self.frame_bgr
 
     def stop(self):
         self.running = False
@@ -95,21 +105,16 @@ def escuchar_comandos_manuales(documentos_totales, cambios, hora_lectura):
             if datos.get('completado') is False:
                 print("\n🦴 [MANUAL] ¡Comando manual recibido! Activando dispensador...")
                 try:
-                    print("-> Ángulo: 45° (Cerrando compuerta)")
                     set_angulo(45)
                     time.sleep(1.5)
-                    
-                    print(f"-> Volviendo a la posición inicial ({ANGULO_INICIAL}°)")
                     set_angulo(ANGULO_INICIAL)
                     time.sleep(1.5)
-
                     soltar_motor()
                     print("✅ [DISPENSADOR MANUAL] Premio entregado con éxito.")
                 except Exception as servo_error:
                     print(f"❌ [DISPENSADOR MANUAL] Error: {servo_error}")
 
                 cambio.document.reference.update({'completado': True})
-                print("📌 [DATABASE] Comando marcado como leído.\n")
 
 
 def reproducir_audio(documentos_totales, cambios, hora_lectura):
@@ -127,7 +132,6 @@ def reproducir_audio(documentos_totales, cambios, hora_lectura):
                     with open(archivo_entrada, "wb") as f: f.write(bytes_audio)
                     try:
                         subprocess.run(['ffmpeg', '-i', archivo_entrada, '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '2', archivo_salida, '-y', '-loglevel', 'quiet'], check=True)
-                        print("🔊 Reproduciendo...")
                         subprocess.run(['aplay', '-D', 'plughw:2,0', archivo_salida], check=True)
                         print("✅ [ALTAVOZ] Mensaje emitido.")
                     except Exception as e:
@@ -141,24 +145,15 @@ def reproducir_audio(documentos_totales, cambios, hora_lectura):
 
 def main():
     print("==================================================")
-    print(" 🚀 PETWATCH - ARQUITECTURA DE DOBLE VÍA (30 FPS) ")
+    print(" 🚀 PETWATCH - VÍDEO 30FPS REAL + IA OPTIMIZADA   ")
     print("==================================================")
 
-    print("Conectando con Google Cloud...")
-    try:
-        publisher = pubsub_v1.PublisherClient()
-        topic_path = publisher.topic_path(PROJECT_ID, TOPIC_ID)
-        db = firestore.Client(project=PROJECT_ID, database=DATABASE_ID)
-        print("-> [OK] Conexiones Cloud establecidas.")
-    except Exception as e:
-        print(f"Error Cloud: {e}")
-        return
+    publisher = pubsub_v1.PublisherClient()
+    topic_path = publisher.topic_path(PROJECT_ID, TOPIC_ID)
+    db = firestore.Client(project=PROJECT_ID, database=DATABASE_ID)
 
-    print("Iniciando flujo de cámara multihilo...")
-    camara_stream = CameraStream().start()
-    time.sleep(1.0) # Esperar a que se llene el primer frame en RAM
-
-    print("Iniciando codificador FFmpeg H.264 (Tubería de vídeo)...")
+    # 1. Arrancamos FFmpeg PRIMERO
+    print("Iniciando codificador FFmpeg H.264...")
     ffmpeg_cmd = [
         'ffmpeg', '-y',
         '-f', 'rawvideo', '-vcodec', 'rawvideo',
@@ -175,39 +170,36 @@ def main():
         print(f"Error FFmpeg: {e}")
         return
 
-    # Escuchadores de fondo
-    print("📡 Activando escuchadores de Firestore (Audio y Motor)...")
-    coleccion_audio_ref = db.collection("comandos_audio")
-    observador_audio = coleccion_audio_ref.on_snapshot(reproducir_audio)
-    
-    coleccion_manual_ref = db.collection("comandos_servo")
-    observador_manual = coleccion_manual_ref.on_snapshot(escuchar_comandos_manuales)
+    # 2. Inyectamos FFmpeg en el hilo de la cámara para que vayan perfectamente sincronizados
+    print("Iniciando cámara multihilo...")
+    camara_stream = CameraStream(proceso_stream).start()
+    time.sleep(1.0) 
 
-    print("\n✅ ¡SISTEMA ONLINE Y TRANSMITIENDO VÍDEO!")
+    # Escuchadores
+    db.collection("comandos_audio").on_snapshot(reproducir_audio)
+    db.collection("comandos_servo").on_snapshot(escuchar_comandos_manuales)
+
+    print("\n✅ ¡SISTEMA ONLINE Y TRANSMITIENDO VÍDEO FLUIDO!")
     ultimo_envio_ia = 0.0
 
     try:
         while True:
-            # Leemos el último frame de la RAM al instante
-            frame_bgr = camara_stream.read()
-            if frame_bgr is None: continue
-
-            # --- VÍA 1: STREAMING DE VÍDEO EN DIRECTO (30 FPS hacia MediaMTX) ---
-            try:
-                proceso_stream.stdin.write(frame_bgr.tobytes())
-            except Exception:
-                pass
-
-            # --- VÍA 2: TELEMETRÍA PARA LA IA (1 foto comprimida por segundo) ---
+            # 🔴 BUCLE PRINCIPAL (Solo se ocupa de la Inteligencia Artificial)
             tiempo_actual = time.time()
-            if tiempo_actual - ultimo_envio_ia >= 1.0: 
-                # Compresión fuerte (60%) para ahorrar red
-                _, buffer = cv2.imencode('.jpg', frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
-                try:
-                    publisher.publish(topic_path, buffer.tobytes())
-                    ultimo_envio_ia = tiempo_actual
-                except Exception: 
-                    pass
+            
+            # Ajustado a 3 segundos para máximo ahorro de CPU y red.
+            if tiempo_actual - ultimo_envio_ia >= 3.0: 
+                frame_bgr = camara_stream.read()
+                if frame_bgr is not None:
+                    _, buffer = cv2.imencode('.jpg', frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
+                    try:
+                        publisher.publish(topic_path, buffer.tobytes())
+                        ultimo_envio_ia = tiempo_actual
+                    except Exception: 
+                        pass
+            
+            # Ponemos a dormir al procesador 50 milisegundos para no quemar la Raspberry Pi
+            time.sleep(0.05) 
 
     except KeyboardInterrupt:
         print("\n🛑 Apagando...")

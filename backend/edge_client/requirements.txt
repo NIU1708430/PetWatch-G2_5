@@ -1,5 +1,6 @@
 opencv-python
 google-cloud-pubsub
 picamera2
-pygame
+#pygame
 google-cloud-firestore
+RPi.GPIO
