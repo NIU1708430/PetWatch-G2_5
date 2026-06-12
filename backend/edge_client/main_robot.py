@@ -3,6 +3,7 @@ import time
 import os
 import subprocess
 import cv2
+import threading # 🔴 Importante para los FPS
 from google.cloud import pubsub_v1
 from google.cloud import firestore
 from picamera2 import Picamera2
@@ -32,7 +33,6 @@ def soltar_motor():
     # Poner el duty a 0 relaja el motor, cortando la corriente y eliminando el jitter
     servo.ChangeDutyCycle(0)
 
-
 # ====================================================================
 # FIJAR EL ÁNGULO INICIAL AL ARRANCAR EL ROBOT
 # ====================================================================
@@ -54,6 +54,46 @@ ANCHO = 640
 ALTO = 480
 # ========================================================
 
+# ====================================================================
+# 🔴 HILO PARALELO: CAPTURA DE CÁMARA ZERO-LAG
+# ====================================================================
+class CameraStream:
+    def __init__(self):
+        self.picam2 = Picamera2()
+        self.picam2.configure(self.picam2.create_video_configuration(
+            main={"format": "RGB888", "size": (ANCHO, ALTO)}
+        ))
+        self.frame = None
+        self.running = False
+        self.lock = threading.Lock()
+
+    def start(self):
+        self.picam2.start()
+        self.running = True
+        self.thread = threading.Thread(target=self.update, args=())
+        self.thread.daemon = True
+        self.thread.start()
+        return self
+
+    def update(self):
+        while self.running:
+            try:
+                img = self.picam2.capture_array("main")
+                with self.lock:
+                    self.frame = img
+            except Exception:
+                pass
+            time.sleep(0.001)
+
+    def read(self):
+        with self.lock:
+            return self.frame
+
+    def stop(self):
+        self.running = False
+        self.thread.join()
+        self.picam2.stop()
+
 
 def escuchar_comandos_manuales(documentos_totales, cambios, hora_lectura):
     """
@@ -69,13 +109,12 @@ def escuchar_comandos_manuales(documentos_totales, cambios, hora_lectura):
                 try:
                     # Movimiento físico del dispensador
                     
-                    
                     print("-> Ángulo: 45° (Cerrando compuerta)")
                     set_angulo(45)
                     time.sleep(1.5)
                     
-                    print("-> Volviendo a la posición inicial (90°)")
-                    set_angulo(190)
+                    print(f"-> Volviendo a la posición inicial ({ANGULO_INICIAL}°)")
+                    set_angulo(ANGULO_INICIAL)
                     time.sleep(1.5)
 
                     # Relajamos el servo para que no consuma batería y evitar el jitter
@@ -154,14 +193,9 @@ def evaluar_premios(documentos_totales, cambios, hora_lectura):
                     ultimo_premio_tiempo = tiempo_actual
                     print(f"\n🎁 [PIPELINE VALIDADO] Mascota identificada ({animal_detectado.upper()}) y confirmada SENTADA. ¡Dando premio!")
                     try:
-                        print("-> Ángulo: 90° (Abriendo compuerta)")
-                        set_angulo(90)
-                        time.sleep(1.5)
-                        print("-> Ángulo: 45° (Cerrando compuerta)")
                         set_angulo(45)
                         time.sleep(1.5)
-                        print("Volviendo a la posi inicial")
-                        set_angulo(90)
+                        set_angulo(ANGULO_INICIAL)
                         time.sleep(1.5)
                         soltar_motor()
                         print("✅ [DISPENSADOR] Ciclo de recompensa completado.")
@@ -174,7 +208,7 @@ def evaluar_premios(documentos_totales, cambios, hora_lectura):
 
 def main():
     print("==================================================")
-    print("   PETWATCH CLOUD - SISTEMA 100% NATIVO EN NUBE   ")
+    print("   PETWATCH CLOUD - TRANSMISIÓN MULTIHILO (FPS+)  ")
     print("==================================================")
 
     # 1. Conexión con Google Cloud Pub/Sub (Vídeo Cloud)
@@ -196,18 +230,10 @@ def main():
         print(f"Error al conectar con Firestore: {e}")
         return
 
-    # 3. Inicialización de Picamera2
-    print("Iniciando Raspberry Pi Camera Module v2...")
-    try:
-        picam2 = Picamera2()
-        picam2.configure(picam2.create_video_configuration(
-            main={"format": "RGB888", "size": (ANCHO, ALTO)}
-        ))
-        picam2.start()
-        print("-> [OK] Cámara v2 lista mediante Picamera2.")
-    except Exception as cam_error:
-        print(f"Error: No se pudo inicializar la cámara. {cam_error}")
-        return
+    # 3. Inicialización de Picamera2 EN PARALELO
+    print("Iniciando flujo paralelo de Picamera2...")
+    camara_stream = CameraStream().start()
+    time.sleep(1.0) # Espera de seguridad para llenar el buffer
 
     # 4. Activar la Escucha de Audio en Tiempo Real (Segundo Plano)
     print("📡 [SISTEMA] Activando canal receptor de Walkie-Talkie...")
@@ -221,9 +247,8 @@ def main():
 
     print("\n==================================================")
     print(" 🤖 [PETWATCH] ¡SISTEMA OPERATIVO Y CONECTADO! ")
-    print("--> Transmitiendo vídeo directo a Google Pub/Sub.")
-    print("--> Escuchando Firestore para el amplificador I2S.")
-    print("--> Escuchando Firestore para el Botón Manual del Dispensador.")
+    print("--> Transmitiendo vídeo fluido a Google Pub/Sub.")
+    print("--> Escuchando Firestore para el amplificador I2S y Motores.")
     print("--> Para apagar de forma segura, pulsa Ctrl + C.")
     print("==================================================\n")
 
@@ -231,29 +256,32 @@ def main():
 
     try:
         while True:
-            # Capturar fotograma en memoria (Matriz RGB)
-            frame_bgr = picam2.capture_array("main")
+            # Capturar fotograma instantáneo del hilo paralelo
+            frame_bgr = camara_stream.read()
+            if frame_bgr is None:
+                continue
 
-            # Envío de vídeo a la nube cada 0.2 segundos (Equivale a ~5 FPS estables)
             tiempo_actual = time.time()
-            if tiempo_actual - ultimo_envio_ia >= 0.3:
-                _, buffer = cv2.imencode('.jpg', frame_bgr)
+            if tiempo_actual - ultimo_envio_ia >= 0.1: # 🔴 ENVÍO CADA 0.1s (~10 FPS TEÓRICOS)
+                
+                # 🔴 REDUCCIÓN DE CALIDAD AL 50% PARA ALIGERAR LA SUBIDA
+                _, buffer = cv2.imencode('.jpg', frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
                 img_bytes = buffer.tobytes()
 
                 try:
-                    future = publisher.publish(topic_path, img_bytes)
-                    print(f"\r[CLOUD VÍDEO] Transmitiendo fotograma activo... ID: {future.result()[:15]}...", end="", flush=True)
+                    # En lugar de bloquear la consola con prints, publicamos en silencio
+                    publisher.publish(topic_path, img_bytes)
                     ultimo_envio_ia = tiempo_actual
                 except Exception as pub_error:
-                    print(f"\nError al enviar a Pub/Sub: {pub_error}")
+                    pass # Ocultamos los errores de timeout para no frenar el bucle
 
-            time.sleep(0.01)
+            time.sleep(0.001)
 
     except KeyboardInterrupt:
         print("\n\n🛑 [SISTEMA] Solicitud de apagado manual detectada.")
     finally:
         print("Cerrando recursos del robot de manera segura...")
-        picam2.stop()
+        camara_stream.stop()
         servo.stop()
         GPIO.cleanup()
         print("¡Cámara liberada e hilos cerrados correctamente. Robot en reposo!")
