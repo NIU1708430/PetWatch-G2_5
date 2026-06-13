@@ -4,21 +4,23 @@ import os
 import subprocess
 import cv2
 import threading
+import numpy as np
 from google.cloud import pubsub_v1
 from google.cloud import firestore
 from picamera2 import Picamera2
-from datetime import datetime, timezone, timedelta
 
-# ====================================================================
-# CONFIGURACIÓN DEL HARDWARE (RPi.GPIO para Servomotor)
-# ====================================================================
+# Forzamos lgpio para evitar conflictos de hardware con gpiozero
+os.environ["GPIOZERO_PIN_FACTORY"] = "lgpio"
 import RPi.GPIO as GPIO
+from gpiozero import PhaseEnableMotor, DistanceSensor
 
+# ====================================================================
+# CONFIGURACIÓN DEL HARDWARE
+# ====================================================================
+# 1. Dispensador de Premios (Servo PWM)
 PIN_SERVO = 4
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(PIN_SERVO, GPIO.OUT)
-
-# Iniciamos el PWM en el pin 4 a 50Hz
 servo = GPIO.PWM(PIN_SERVO, 50) 
 servo.start(0) 
 
@@ -29,25 +31,62 @@ def set_angulo(angulo):
 def soltar_motor():
     servo.ChangeDutyCycle(0)
 
-# Fijar ángulo inicial
 ANGULO_INICIAL = 190 
-print(f"🔧 Ajustando dispensador a su posición inicial: {ANGULO_INICIAL}°")
 set_angulo(ANGULO_INICIAL)
 time.sleep(1.0)
 soltar_motor()
+
+# 2. Motores L298N (DRI0002)
+motor_izquierdo = PhaseEnableMotor(phase=17, enable=13)
+motor_derecho = PhaseEnableMotor(phase=22, enable=27)
+
+def avanzar(velocidad=1.0):
+    motor_izquierdo.forward(velocidad)
+    motor_derecho.forward(velocidad)
+
+def girar_izquierda(velocidad=1.0):
+    motor_izquierdo.backward(velocidad)
+    motor_derecho.forward(velocidad)
+
+def girar_derecha(velocidad=1.0):
+    motor_izquierdo.forward(velocidad)
+    motor_derecho.backward(velocidad)
+
+def detener():
+    motor_izquierdo.stop()
+    motor_derecho.stop()
+
+def fijar_velocidades(vel_izq, vel_der):
+    if vel_izq >= 0: motor_izquierdo.forward(vel_izq)
+    else: motor_izquierdo.backward(abs(vel_izq))
+    if vel_der >= 0: motor_derecho.forward(vel_der)
+    else: motor_derecho.backward(abs(vel_der))
+
+# 3. Sensores Ultrasónicos HC-SR04
+class HCSR04:
+    def __init__(self, trigger_pin, echo_pin):
+        self._sensor = DistanceSensor(echo=echo_pin, trigger=trigger_pin, max_distance=4.0)
+    def distance_cm(self):
+        return self._sensor.distance * 100
+
+sensor_cen = HCSR04(trigger_pin=5, echo_pin=6)
+sensor_der = HCSR04(trigger_pin=26, echo_pin=12) 
+sensor_izq = HCSR04(trigger_pin=23, echo_pin=24)
 
 # ================= CONFIGURACIÓN MASTER =================
 PROJECT_ID = "petwatch-sm"
 DATABASE_ID = "petwatch-db"
 TOPIC_ID = "petwatch-video-stream"
-RTSP_URL = "rtsp://localhost:8554/mascota"
 ANCHO = 640
 ALTO = 480
-FPS = 30
+VEL_BASE = 0.8
+DIST_FRENTE_MIN = 25.0
+DIST_PARED_MIN = 20.0
+DIST_PARED_MAX = 25.0
 # ========================================================
 
 # ====================================================================
-# 🔴 CLASE MULTIHILO PARA CÁMARA FLUIDA (Cero tirones)
+# 🔴 HILO DE CÁMARA (Para no frenar a los motores)
 # ====================================================================
 class CameraStream:
     def __init__(self):
@@ -70,12 +109,13 @@ class CameraStream:
     def update(self):
         while self.running:
             try:
-                img = self.picam2.capture_array("main")
+                img_rgb = self.picam2.capture_array("main")
+                img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
                 with self.lock:
-                    self.frame = img
+                    self.frame = img_bgr
             except Exception:
                 pass
-            time.sleep(0.001)
+            time.sleep(0.01)
 
     def read(self):
         with self.lock:
@@ -87,138 +127,160 @@ class CameraStream:
         self.picam2.stop()
 
 
-def escuchar_comandos_manuales(documentos_totales, cambios, hora_lectura):
-    """ Escucha el botón de 'Dar Premio' de Firestore """
+def escuchar_comandos_manuales(doc_totales, cambios, hora_lectura):
     for cambio in cambios:
         if cambio.type.name == 'ADDED':
             datos = cambio.document.to_dict()
             if datos.get('completado') is False:
-                print("\n🦴 [MANUAL] ¡Comando manual recibido! Activando dispensador...")
+                print("\n🦴 [MANUAL] ¡Dispensando premio!")
                 try:
-                    print("-> Ángulo: 45° (Cerrando compuerta)")
                     set_angulo(45)
                     time.sleep(1.5)
-                    
-                    print(f"-> Volviendo a la posición inicial ({ANGULO_INICIAL}°)")
                     set_angulo(ANGULO_INICIAL)
                     time.sleep(1.5)
-
                     soltar_motor()
-                    print("✅ [DISPENSADOR MANUAL] Premio entregado con éxito.")
-                except Exception as servo_error:
-                    print(f"❌ [DISPENSADOR MANUAL] Error: {servo_error}")
-
+                except Exception as e:
+                    pass
                 cambio.document.reference.update({'completado': True})
-                print("📌 [DATABASE] Comando marcado como leído.\n")
 
-
-def reproducir_audio(documentos_totales, cambios, hora_lectura):
-    """ Escucha los audios del Walkie-Talkie y los saca por el I2S """
+def reproducir_audio(doc_totales, cambios, hora_lectura):
     for cambio in cambios:
         if cambio.type.name == 'ADDED':
             datos = cambio.document.to_dict()
             if datos.get('reproducido') is False:
-                print("\n🎤 [ALTAVOZ] ¡Entrando audio desde la web PetWatch!")
+                print("\n🎤 [ALTAVOZ] ¡Reproduciendo audio!")
                 audio_b64 = datos.get('audio_b64')
                 if audio_b64:
                     archivo_entrada = "mensaje_web.webm"
                     archivo_salida = "mensaje_robot.wav"
-                    bytes_audio = base64.b64decode(audio_b64)
-                    with open(archivo_entrada, "wb") as f: f.write(bytes_audio)
+                    with open(archivo_entrada, "wb") as f: f.write(base64.b64decode(audio_b64))
                     try:
                         subprocess.run(['ffmpeg', '-i', archivo_entrada, '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '2', archivo_salida, '-y', '-loglevel', 'quiet'], check=True)
-                        print("🔊 Reproduciendo...")
                         subprocess.run(['aplay', '-D', 'plughw:2,0', archivo_salida], check=True)
-                        print("✅ [ALTAVOZ] Mensaje emitido.")
-                    except Exception as e:
-                        print(f"❌ [ALTAVOZ] Error: {e}")
+                    except Exception: pass
                     finally:
                         if os.path.exists(archivo_entrada): os.remove(archivo_entrada)
                         if os.path.exists(archivo_salida): os.remove(archivo_salida)
-                
                 cambio.document.reference.update({'reproducido': True})
 
 
 def main():
     print("==================================================")
-    print(" 🚀 PETWATCH - ARQUITECTURA DE DOBLE VÍA (30 FPS) ")
+    print(" 🤖 PETWATCH - IA AUTÓNOMA + NAVEGACIÓN ACTIVA")
     print("==================================================")
 
-    print("Conectando con Google Cloud...")
+    print("Cargando IA de visión local (MobileNet-SSD)...")
     try:
-        publisher = pubsub_v1.PublisherClient()
-        topic_path = publisher.topic_path(PROJECT_ID, TOPIC_ID)
-        db = firestore.Client(project=PROJECT_ID, database=DATABASE_ID)
-        print("-> [OK] Conexiones Cloud establecidas.")
+        net = cv2.dnn.readNetFromCaffe("MobileNetSSD_deploy.prototxt", "MobileNetSSD_deploy.caffemodel")
     except Exception as e:
-        print(f"Error Cloud: {e}")
+        print(f"Error: Faltan los archivos de MobileNet-SSD. Ejecuta los comandos wget primero.\n{e}")
         return
 
-    print("Iniciando flujo de cámara multihilo...")
+    publisher = pubsub_v1.PublisherClient()
+    topic_path = publisher.topic_path(PROJECT_ID, TOPIC_ID)
+    db = firestore.Client(project=PROJECT_ID, database=DATABASE_ID)
+
     camara_stream = CameraStream().start()
-    time.sleep(1.0) # Esperar a que se llene el primer frame en RAM
+    time.sleep(1.0)
 
-    print("Iniciando codificador FFmpeg H.264 (Tubería de vídeo)...")
-    ffmpeg_cmd = [
-        'ffmpeg', '-y',
-        '-f', 'rawvideo', '-vcodec', 'rawvideo',
-        '-pix_fmt', 'bgr24',                 
-        '-s', f'{ANCHO}x{ALTO}', '-r', str(FPS),
-        '-i', '-',                           
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
-        '-an',                               
-        '-f', 'rtsp', RTSP_URL               
-    ]
-    try:
-        proceso_stream = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
-    except Exception as e:
-        print(f"Error FFmpeg: {e}")
-        return
+    db.collection("comandos_audio").on_snapshot(reproducir_audio)
+    db.collection("comandos_servo").on_snapshot(escuchar_comandos_manuales)
 
-    # Escuchadores de fondo
-    print("📡 Activando escuchadores de Firestore (Audio y Motor)...")
-    coleccion_audio_ref = db.collection("comandos_audio")
-    observador_audio = coleccion_audio_ref.on_snapshot(reproducir_audio)
-    
-    coleccion_manual_ref = db.collection("comandos_servo")
-    observador_manual = coleccion_manual_ref.on_snapshot(escuchar_comandos_manuales)
-
-    print("\n✅ ¡SISTEMA ONLINE Y TRANSMITIENDO VÍDEO!")
+    print("\n✅ ¡SISTEMA OPERATIVO! Robot en modo patrulla.")
     ultimo_envio_ia = 0.0
 
     try:
         while True:
-            # Leemos el último frame de la RAM al instante
-            frame_bgr = camara_stream.read()
-            if frame_bgr is None: continue
+            frame = camara_stream.read()
+            if frame is None:
+                continue
 
-            # --- VÍA 1: STREAMING DE VÍDEO EN DIRECTO (30 FPS hacia MediaMTX) ---
-            try:
-                proceso_stream.stdin.write(frame_bgr.tobytes())
-            except Exception:
-                pass
+            # ====================================================
+            # 🧠 CEREBRO DEL ROBOT: JERARQUÍA DE DECISIONES
+            # ====================================================
+            d_cen = sensor_cen.distance_cm()
+            d_der = sensor_der.distance_cm()
+            d_izq = sensor_izq.distance_cm()
 
-            # --- VÍA 2: TELEMETRÍA PARA LA IA (1 foto comprimida por segundo) ---
+            # 🛑 PRIORIDAD 1: SUPERVIVENCIA (Evasión de colisiones)
+            if d_cen < 15.0: # Emergencia absoluta
+                print(f"¡PELIGRO! Muro inminente a {d_cen:.1f} cm -> FRENANDO / RETROCEDIENDO")
+                fijar_velocidades(-VEL_BASE, -VEL_BASE)
+                time.sleep(0.5)
+                girar_izquierda(VEL_BASE)
+                time.sleep(0.5)
+                continue
+
+            elif d_cen < DIST_FRENTE_MIN:
+                print(f"Obstáculo al frente ({d_cen:.1f} cm) -> Girando IZQUIERDA")
+                girar_izquierda(VEL_BASE)
+            
+            else:
+                # 🐕 PRIORIDAD 2: RASTREO VISUAL LOCAL
+                blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
+                net.setInput(blob)
+                detecciones = net.forward()
+                
+                mascota_detectada = False
+                centro_x = 0
+
+                for i in np.arange(0, detecciones.shape[2]):
+                    confianza = detecciones[0, 0, i, 2]
+                    if confianza > 0.6: # 60% de seguridad
+                        clase_id = int(detecciones[0, 0, i, 1])
+                        # Clase 8 es 'Gato', Clase 12 es 'Perro'
+                        if clase_id == 8 or clase_id == 12:
+                            mascota_detectada = True
+                            caja = detecciones[0, 0, i, 3:7] * np.array([ANCHO, ALTO, ANCHO, ALTO])
+                            (startX, startY, endX, endY) = caja.astype("int")
+                            centro_x = (startX + endX) / 2
+                            break # Solo seguimos al primero que veamos
+
+                if mascota_detectada:
+                    # Seguimiento basado en la posición de la mascota en pantalla
+                    if centro_x < 250:
+                        print("👀 Mascota a la IZQUIERDA -> Corrigiendo rumbo.")
+                        fijar_velocidades(0.4, VEL_BASE)
+                    elif centro_x > 390:
+                        print("👀 Mascota a la DERECHA -> Corrigiendo rumbo.")
+                        fijar_velocidades(VEL_BASE, 0.4)
+                    else:
+                        print("🎯 Mascota EN EL CENTRO -> ¡Avanzando!")
+                        avanzar(VEL_BASE)
+                
+                else:
+                    # 🧭 PRIORIDAD 3: PATRULLAJE (Wall-Following)
+                    if d_izq < DIST_PARED_MIN:
+                        fijar_velocidades(VEL_BASE, 0.5)  
+                    elif d_der < DIST_PARED_MIN:
+                        fijar_velocidades(0.5, VEL_BASE) 
+                    elif d_der > DIST_PARED_MAX:
+                        fijar_velocidades(VEL_BASE, 0.5) 
+                    else:
+                        avanzar(VEL_BASE)
+
+            # ====================================================
+            # ☁️ TELEMETRÍA: ENVÍO A GOOGLE CLOUD
+            # ====================================================
             tiempo_actual = time.time()
-            if tiempo_actual - ultimo_envio_ia >= 1.0: 
-                # Compresión fuerte (60%) para ahorrar red
-                _, buffer = cv2.imencode('.jpg', frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
+            if tiempo_actual - ultimo_envio_ia >= 1.0: # 1 fotograma por segundo a la App/Nube
+                _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
                 try:
                     publisher.publish(topic_path, buffer.tobytes())
                     ultimo_envio_ia = tiempo_actual
-                except Exception: 
+                except Exception:
                     pass
 
+            time.sleep(0.05) # Pequeño respiro para la CPU local
+
     except KeyboardInterrupt:
-        print("\n🛑 Apagando...")
+        print("\n🛑 Apagando el sistema...")
     finally:
+        detener()
         camara_stream.stop()
-        if proceso_stream:
-            proceso_stream.stdin.close()
-            proceso_stream.wait()
         servo.stop()
         GPIO.cleanup()
-        print("¡Hardware liberado!")
+        print("¡Robot aparcado con éxito!")
 
 if __name__ == "__main__":
     main()
