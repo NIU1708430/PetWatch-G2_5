@@ -8,6 +8,7 @@ import 'package:record/record.dart';
 import 'package:http/http.dart' as http;
 
 void main() async {
+  // Asegura que los bindings de la plataforma esten listos antes de inicializar Firebase
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
@@ -15,6 +16,7 @@ void main() async {
 
   FirebaseMessaging messaging = FirebaseMessaging.instance;
 
+  // Solicitud explicita de permisos en iOS/Android para poder recibir las alertas infraganti
   NotificationSettings settings = await messaging.requestPermission(
     alert: true,
     badge: true,
@@ -22,17 +24,18 @@ void main() async {
   );
 
   if (settings.authorizationStatus == AuthorizationStatus.authorized) {
-    print('¡Permiso concedido por el usuario!');
+    print('Permiso concedido por el usuario.');
 
     try {
+      // Obtenemos el identificador unico de este dispositivo.
+      // Se utiliza la VAPID key para la compatibilidad web/cross-platform.
       String? token = await messaging.getToken(
-        vapidKey: "BHJbHkXwhqyhTj1c_XukOibvLlR_EEKk6tssz8uxI5Qy0ZQHjga62JwqVQHOuQdRRQ_MaTYbFZ7PeAaOiYnflmw", 
+        vapidKey: "BHJbHkXwhqyhTj1c_XukOibvLlR_EEKk6tssz8uxI5Qy0ZQHjga62JwqVQHOuQdRRQ_MaTYbFZ7PeAaOiYnflmw",
       );
       
       if (token != null) {
-        print("================ TOKEN DEL MÓVIL ================");
-        print(token);
-        
+        // Persistimos el token en Firestore. La Cloud Function leera esta coleccion 
+        // para hacer el envio Multicast (Push) a todos los clientes activos.
         await FirebaseFirestore.instanceFor(app: Firebase.app(), databaseId: 'petwatch-db')
             .collection('usuarios_suscritos')
             .doc(token)
@@ -40,14 +43,13 @@ void main() async {
               'token': token,
               'fecha_registro': FieldValue.serverTimestamp(),
             });
-        print("✅ Token guardado CORRECTAMENTE en petwatch-db.");
+        print("Token registrado correctamente en la base de datos.");
       }
     } catch (e) {
-      print("❌ ERROR REAL AL PEDIR EL TOKEN:");
-      print(e.toString());
+      print("Fallo critico al solicitar el token FCM: $e");
     }
   } else {
-    print('El usuario rechazó los permisos de notificación.');
+    print('Permisos de notificacion rechazados por el SO o el usuario.');
   }
 
   runApp(const PetWatchApp());
@@ -70,7 +72,6 @@ class PetWatchApp extends StatelessWidget {
   }
 }
 
-// --- PANTALLA PRINCIPAL CON NAVEGACIÓN ---
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});
 
@@ -79,6 +80,7 @@ class MainNavigationScreen extends StatefulWidget {
 }
 
 class _MainNavigationScreenState extends State<MainNavigationScreen> {
+  // Gestor de estado simple para la navegacion inferior
   int _pestanaActual = 0;
 
   final List<Widget> _pantallas = [
@@ -94,6 +96,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
         title: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            // Indicador visual de estado
             Icon(Icons.circle, color: _pestanaActual == 0 ? Colors.red : Colors.green, size: 12),
             const SizedBox(width: 8),
             Text(
@@ -125,7 +128,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   }
 }
 
-// --- PESTAÑA 1: EL VÍDEO EN DIRECTO CON CONTROLES IOT ---
 class LiveViewerBody extends StatefulWidget {
   const LiveViewerBody({super.key});
 
@@ -135,28 +137,28 @@ class LiveViewerBody extends StatefulWidget {
 
 class _LiveViewerBodyState extends State<LiveViewerBody> {
   final AudioRecorder _grabadorAudio = AudioRecorder();
+  
+  // Variables de bloqueo de estado de la UI para evitar pulsaciones multiples (Debounce)
   bool _grabando = false;
-  bool _botonPulsado = false; 
-  bool _dispensando = false; // Control del botón del servo
+  bool _botonPulsado = false;
+  bool _dispensando = false;
 
-  // ========================================================
-  // LÓGICA DEL PREMIO MANUAL (NUEVA FUNCIÓN)
-  // ========================================================
   void _dispensarPremioManual() async {
+    // Bloqueamos el boton en la interfaz temporalmente
     setState(() {
       _dispensando = true;
     });
 
     try {
+      // Inyectamos el evento asincrono en Firestore.
+      // El campo 'completado: false' es vital para la idempotencia en el robot.
       await FirebaseFirestore.instanceFor(app: Firebase.app(), databaseId: 'petwatch-db')
           .collection('comandos_servo')
           .add({
         'accion': 'dispensar',
         'fecha_hora': FieldValue.serverTimestamp(),
-        'completado': false, // El robot pondrá esto en true cuando gire el motor
+        'completado': false,
       });
-      
-      print("🚀 ¡Comando de premio enviado a Firestore!");
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -168,10 +170,10 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
         );
       }
     } catch (e) {
-      print("❌ Error al enviar premio manual: $e");
+      print("Error en I/O al intentar escribir en comandos_servo: $e");
     }
 
-    // Bloqueamos el botón 3 segundos para dar tiempo al motor físico y evitar spam
+    // Simulamos un cooldown visual antes de volver a habilitar el boton
     await Future.delayed(const Duration(seconds: 3));
     if (mounted) {
       setState(() {
@@ -180,9 +182,6 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
     }
   }
 
-  // ========================================================
-  // LÓGICA DEL WALKIE-TALKIE
-  // ========================================================
   void _iniciarGrabacion() async {
     setState(() {
       _botonPulsado = true;
@@ -192,46 +191,38 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
       if (await _grabadorAudio.hasPermission()) {
         if (!_botonPulsado) return;
 
+        // Se usa Opus a 16kHz para maximizar la relacion calidad/compresion 
+        // ya que este archivo viajara incrustado como texto (Base64) en Firestore
         await _grabadorAudio.start(
-          const RecordConfig(encoder: AudioEncoder.opus, sampleRate: 16000), 
+          const RecordConfig(encoder: AudioEncoder.opus, sampleRate: 16000),
           path: '',
         );
+        setState(() { _grabando = true; });
         
-        setState(() {
-          _grabando = true;
-        });
-
-        if (!_botonPulsado) {
-          _detenerYEnviarGrabacion();
-        }
+        // Manejo de edge case: el usuario solto el boton antes de que la inicializacion terminara
+        if (!_botonPulsado) _detenerYEnviarGrabacion();
       } else {
-        setState(() {
-          _botonPulsado = false;
-        });
+        setState(() { _botonPulsado = false; });
       }
     } catch (e) {
-      setState(() {
-        _botonPulsado = false;
-      });
+      setState(() { _botonPulsado = false; });
     }
   }
 
   void _detenerYEnviarGrabacion() async {
-    setState(() {
-      _botonPulsado = false;
-    });
-
+    setState(() { _botonPulsado = false; });
     if (!_grabando) return;
 
     try {
       final rutaBlob = await _grabadorAudio.stop();
-      setState(() {
-        _grabando = false;
-      });
+      setState(() { _grabando = false; });
 
       if (rutaBlob != null) {
+        // Peticion HTTP local para recuperar el blob desde la memoria volatil del dispositivo
         final respuesta = await http.get(Uri.parse(rutaBlob));
         final bytesAudio = respuesta.bodyBytes;
+        
+        // Serializacion a Base64 para poder inyectarlo en un documento NoSQL
         String audioBase64 = base64Encode(bytesAudio);
 
         await FirebaseFirestore.instanceFor(app: Firebase.app(), databaseId: 'petwatch-db')
@@ -239,11 +230,11 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
             .add({
               'audio_b64': audioBase64,
               'fecha_hora': FieldValue.serverTimestamp(),
-              'reproducido': false,
+              'reproducido': false, // El robot pondra esto a True cuando el I2S lo consuma
             });
       }
     } catch (e) {
-      print("❌ Error al detener o subir audio: $e");
+      print("Error durante el encoding o la subida del buffer de audio: $e");
     }
   }
 
@@ -255,6 +246,8 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
 
   @override
   Widget build(BuildContext context) {
+    // El StreamBuilder suscribe la interfaz directamente a la base de datos (Observer Pattern).
+    // Cada vez que la IA en Cloud procesa un fotograma, la pantalla se refresca automaticamente.
     return StreamBuilder<QuerySnapshot>(
       stream: FirebaseFirestore.instanceFor(app: Firebase.app(), databaseId: 'petwatch-db')
           .collection('historial_mascotas')
@@ -273,7 +266,7 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
               children: [
                 Icon(Icons.videocam_off, color: Colors.white38, size: 64),
                 SizedBox(height: 16),
-                Text('Esperando señal del robot...', style: TextStyle(color: Colors.white54, fontSize: 16)),
+                Text('Esperando señal de telemetría...', style: TextStyle(color: Colors.white54, fontSize: 16)),
               ],
             ),
           );
@@ -286,41 +279,41 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
 
         return Column(
           children: [
+            // Frame Viewer: Deserializa en tiempo real el Base64 a pixeles
             Expanded(
               child: Container(
                 color: Colors.grey[950],
                 alignment: Alignment.center,
                 child: fotoBase64 != null
+                    // gaplessPlayback es crucial para evitar el parpadeo negro entre frames asincronos
                     ? Image.memory(base64Decode(fotoBase64), fit: BoxFit.contain, gaplessPlayback: true)
-                    : const Center(child: Text('Captura recibida sin imagen', style: TextStyle(color: Colors.white54))),
+                    : const Center(child: Text('Frame droppeado o vacio', style: TextStyle(color: Colors.white54))),
               ),
             ),
             
-            // --- PANEL DE CONTROL: WALKIE-TALKIE Y PREMIO MANUAL ---
+            // Consola de Actuadores IoT
             Padding(
               padding: const EdgeInsets.only(top: 16, bottom: 8),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  
-                  // BOTÓN 1: WALKIE-TALKIE (Mantenido)
                   Column(
                     children: [
                       Listener(
-                        behavior: HitTestBehavior.opaque, 
+                        behavior: HitTestBehavior.opaque,
                         onPointerDown: (_) => _iniciarGrabacion(),
                         onPointerUp: (_) => _detenerYEnviarGrabacion(),
                         child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 70), 
+                          duration: const Duration(milliseconds: 70),
                           width: 70,  
-                          height: 70, 
+                          height: 70,
                           decoration: BoxDecoration(
                             color: _botonPulsado ? Colors.green : Colors.red,
                             shape: BoxShape.circle,
                             boxShadow: [
                               BoxShadow(
-                                color: (_botonPulsado ? Colors.green : Colors.red).withOpacity(0.4), 
-                                blurRadius: 15, 
+                                color: (_botonPulsado ? Colors.green : Colors.red).withOpacity(0.4),
+                                blurRadius: 15,
                                 spreadRadius: _botonPulsado ? 6 : 2
                               )
                             ],
@@ -332,13 +325,12 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        _botonPulsado ? "¡HABLANDO EN VIVO!" : "Mantén para hablar",
+                        _botonPulsado ? "Transmitiendo al Edge..." : "Mantén para hablar",
                         style: TextStyle(color: _botonPulsado ? Colors.green : Colors.white54, fontSize: 12, fontWeight: FontWeight.bold),
                       ),
                     ],
                   ),
 
-                  // BOTÓN 2: PREMIO MANUAL (Nuevo)
                   Column(
                     children: [
                       GestureDetector(
@@ -346,20 +338,20 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 200),
                           width: 70,  
-                          height: 70, 
+                          height: 70,
                           decoration: BoxDecoration(
                             color: _dispensando ? Colors.grey[700] : Colors.orange,
                             shape: BoxShape.circle,
                             boxShadow: [
                               BoxShadow(
-                                color: (_dispensando ? Colors.transparent : Colors.orange).withOpacity(0.4), 
-                                blurRadius: 15, 
+                                color: (_dispensando ? Colors.transparent : Colors.orange).withOpacity(0.4),
+                                blurRadius: 15,
                                 spreadRadius: _dispensando ? 1 : 2
                               )
                             ],
                           ),
                           child: Center(
-                            child: _dispensando 
+                            child: _dispensando
                               ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                               : const Icon(Icons.pets, color: Colors.white, size: 36),
                           ),
@@ -367,16 +359,16 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        _dispensando ? "Enviando..." : "Dar Premio",
+                        _dispensando ? "Cooldown hardware" : "Activar Servo",
                         style: TextStyle(color: _dispensando ? Colors.white38 : Colors.white54, fontSize: 12, fontWeight: FontWeight.bold),
                       ),
                     ],
                   ),
-
                 ],
               ),
             ),
 
+            // Metadatos Cognitivos
             Container(
               padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 32),
               color: Colors.black87,
@@ -385,7 +377,7 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
                 children: [
                   Column(
                     children: [
-                      const Text('DETECTADO', style: TextStyle(color: Colors.white38, fontSize: 12, fontWeight: FontWeight.bold)),
+                      const Text('ENTIDAD DETECTADA', style: TextStyle(color: Colors.white38, fontSize: 12, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 4),
                       Text(animal.toUpperCase(), style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
                     ],
@@ -393,7 +385,7 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
                   Container(width: 1, height: 40, color: Colors.white12),
                   Column(
                     children: [
-                      const Text('POSTURA / ACCIÓN', style: TextStyle(color: Colors.white38, fontSize: 12, fontWeight: FontWeight.bold)),
+                      const Text('CLASIFICACIÓN POSTURAL', style: TextStyle(color: Colors.white38, fontSize: 12, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 4),
                       Text(postura.toUpperCase(), style: const TextStyle(color: Colors.redAccent, fontSize: 20, fontWeight: FontWeight.bold)),
                     ],
@@ -408,12 +400,13 @@ class _LiveViewerBodyState extends State<LiveViewerBody> {
   }
 }
 
-// --- PESTAÑA 2: GALERÍA DE FOTOS PERMANENTES (Sin cambios) ---
 class AlertsGalleryBody extends StatelessWidget {
   const AlertsGalleryBody({super.key});
 
   @override
   Widget build(BuildContext context) {
+    // Al igual que el visor, esta consulta persiste abierta pero contra 
+    // la coleccion de alertes infraganti, generando la galeria reactiva.
     return StreamBuilder<QuerySnapshot>(
       stream: FirebaseFirestore.instanceFor(app: Firebase.app(), databaseId: 'petwatch-db')
           .collection('alertas_guardadas')
@@ -431,7 +424,7 @@ class AlertsGalleryBody extends StatelessWidget {
               children: [
                 Icon(Icons.photo_library_outlined, color: Colors.white38, size: 64),
                 SizedBox(height: 16),
-                Text('Aún no hay alertas guardadas en el historial.', style: TextStyle(color: Colors.white54, fontSize: 16)),
+                Text('Buffer de historial vacío.', style: TextStyle(color: Colors.white54, fontSize: 16)),
               ],
             ),
           );
@@ -453,7 +446,8 @@ class AlertsGalleryBody extends StatelessWidget {
             String postura = alerta['postura'] ?? 'Acción';
             
             var fechaRaw = alerta['fecha_hora'];
-            String horaTexto = "Reciente";
+            String horaTexto = "Syncing...";
+            
             if (fechaRaw != null && fechaRaw is Timestamp) {
               DateTime dt = fechaRaw.toDate();
               horaTexto = "${dt.day}/${dt.month} - ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}";
@@ -469,7 +463,7 @@ class AlertsGalleryBody extends StatelessWidget {
                   Expanded(
                     child: fotoB64 != null
                         ? Image.memory(base64Decode(fotoB64), fit: BoxFit.cover)
-                        : Container(color: Colors.grey[800], child: const Icon(Icons.image_not_supported)),
+                        : Container(color: Colors.grey[800], child: const Icon(Icons.broken_image)),
                   ),
                   Padding(
                     padding: const EdgeInsets.all(8.0),

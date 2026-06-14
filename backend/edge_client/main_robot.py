@@ -7,109 +7,107 @@ from google.cloud import pubsub_v1
 from google.cloud import firestore
 from picamera2 import Picamera2
 from datetime import datetime, timezone, timedelta
-
-# ====================================================================
-# CONFIGURACIÓN DEL HARDWARE (Inyección de pines y motores vía RPi.GPIO)
-# ====================================================================
 import RPi.GPIO as GPIO
 
+# Configuracion de pines y motor (RPi.GPIO)
 PIN_SERVO = 4
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(PIN_SERVO, GPIO.OUT)
 
-# Iniciamos el PWM en el pin 4 a 50Hz (Frecuencia estándar para servos MG90S)
+# El motor MG90S funciona a una frecuencia estandar de 50Hz
 servo = GPIO.PWM(PIN_SERVO, 50) 
-servo.start(0) # Iniciamos con ciclo de trabajo 0 (motor apagado y suelto)
+servo.start(0) 
 
 def set_angulo(angulo):
+    # Formula para convertir el angulo (0-180) a ciclo de trabajo (duty cycle)
     duty = (angulo / 18) + 2
     servo.ChangeDutyCycle(duty)
 
 def soltar_motor():
+    # Cortar la senyal PWM (duty 0) evita que el motor vibre (jitter), 
+    # se caliente y consuma bateria cuando no se esta moviendo
     servo.ChangeDutyCycle(0)
 
-# Fijar el ángulo inicial al arrancar el robot
+# Posicion inicial por defecto al arrancar el script
 ANGULO_INICIAL = 190 
-print(f"🔧 Ajustando dispensador a su posición inicial: {ANGULO_INICIAL}°")
+print(f"Ajustando dispensador a su posicion inicial: {ANGULO_INICIAL} grados")
 set_angulo(ANGULO_INICIAL)
 time.sleep(1.0)  
 soltar_motor()   
 
-# ====================================================================
-# VARIABLES GLOBALES DE CONTROL (Premios y Obediencia)
-# ====================================================================
+# Timers de control para evitar comportamientos no deseados
 ultimo_premio_tiempo = 0.0
-COOLDOWN_PREMIOS = 30.0  # Segundos de espera entre premios
+COOLDOWN_PREMIOS = 30.0  
 
-ultimo_audio_tiempo = 0.0 # Controla cuándo hablaste por última vez
-VENTANA_OBEDIENCIA = 15.0 # Segundos que tiene la mascota para obedecer al audio
+ultimo_audio_tiempo = 0.0 
+VENTANA_OBEDIENCIA = 15.0 
 
-# ================= CONFIGURACIÓN MASTER =================
+# Credenciales y parametros de la camara
 PROJECT_ID = "petwatch-sm"
 DATABASE_ID = "petwatch-db"
 TOPIC_ID = "petwatch-video-stream"
 ANCHO = 640
 ALTO = 480
-# ========================================================
 
 
 def escuchar_comandos_manuales(documentos_totales, cambios, hora_lectura):
-    """ Comando manual: Ignora la IA y da el premio al pulsar el botón """
+    # Se dispara cuando el usuario pulsa el boton en la app. Ignora a la IA.
     for cambio in cambios:
         if cambio.type.name == 'ADDED':
             datos = cambio.document.to_dict()
             
             if datos.get('completado') is False:
-                print("\n🦴 [MANUAL] ¡Comando manual recibido desde la App! Activando dispensador...")
+                print("\n[MANUAL] Comando recibido desde la App. Activando dispensador...")
                 try:
-                    print("-> Ángulo: 45° (Cerrando compuerta)")
                     set_angulo(45)
                     time.sleep(1.5)
                     
-                    print(f"-> Volviendo a la posición inicial ({ANGULO_INICIAL}°)")
                     set_angulo(ANGULO_INICIAL)
                     time.sleep(1.5)
 
                     soltar_motor()
-                    print("✅ [DISPENSADOR MANUAL] Premio entregado con éxito.")
+                    print("[DISPENSADOR MANUAL] Premio entregado con exito.")
                 except Exception as servo_error:
-                    print(f"❌ [DISPENSADOR MANUAL] Error al mover el motor: {servo_error}")
+                    print(f"[DISPENSADOR MANUAL] Error al mover el motor: {servo_error}")
 
+                # Es vital marcarlo como true para que si se reinicia el script no vuelva a tirar el premio
                 cambio.document.reference.update({'completado': True})
-                print("📌 [DATABASE] Comando manual marcado como leído en Firestore.\n")
+                print("[DATABASE] Comando manual marcado como leido.")
 
 
 def reproducir_audio(documentos_totales, cambios, hora_lectura):
-    """ Escucha de audios y activador del temporizador de obediencia """
+    # Listener para descargar, convertir y reproducir notas de voz
     global ultimo_audio_tiempo
     for cambio in cambios:
         if cambio.type.name == 'ADDED':
             datos = cambio.document.to_dict()
             
             if datos.get('reproducido') is False:
-                print("\n🎤 [ALTAVOZ] ¡Entrando audio desde la web PetWatch!")
+                print("\n[ALTAVOZ] Entrando audio desde la web PetWatch")
                 audio_b64 = datos.get('audio_b64')
                 
                 if audio_b64:
                     archivo_entrada = "mensaje_web.webm"
                     archivo_salida = "mensaje_robot.wav"
                     
+                    # El audio llega codificado en texto, hay que pasarlo a bytes fisicos
                     bytes_audio = base64.b64decode(audio_b64)
                     with open(archivo_entrada, "wb") as archivo_webm:
                         archivo_webm.write(bytes_audio)
                     
                     try:
+                        # Forzamos la conversion a PCM 44100Hz para compatibilidad con el DAC I2S
                         subprocess.run(['ffmpeg', '-i', archivo_entrada, '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '2', archivo_salida, '-y', '-loglevel', 'quiet'], check=True)
-                        print("🔊 Reproduciendo audio...")
+                        print("Reproduciendo audio...")
                         subprocess.run(['aplay', '-D', 'plughw:2,0', archivo_salida], check=True)
-                        print("✅ [ALTAVOZ] Mensaje emitido correctamente.")
+                        print("[ALTAVOZ] Mensaje emitido.")
                         
-                        # 🔴 AQUÍ INICIAMOS EL MODO ADIESTRAMIENTO
+                        # Al hablar, abrimos la ventana de tiempo para que la mascota obedezca
                         ultimo_audio_tiempo = time.time()
-                        print(f"⏱️ [ADIESTRAMIENTO] Tu mascota tiene {VENTANA_OBEDIENCIA} segundos para sentarse y ganar su premio...")
+                        print(f"[ADIESTRAMIENTO] La mascota tiene {VENTANA_OBEDIENCIA} segundos para sentarse.")
                         
                     except Exception as e:
-                        print(f"❌ [ALTAVOZ] Error en la reproducción: {e}")
+                        print(f"[ALTAVOZ] Error en la reproduccion: {e}")
                     finally:
                         if os.path.exists(archivo_entrada): os.remove(archivo_entrada)
                         if os.path.exists(archivo_salida): os.remove(archivo_salida)
@@ -118,7 +116,7 @@ def reproducir_audio(documentos_totales, cambios, hora_lectura):
 
 
 def evaluar_premios(documentos_totales, cambios, hora_lectura):
-    """ Evalúa si la mascota obedece después de haber hablado """
+    # Logica core del adiestramiento. Junta la lectura de la IA con el estado del altavoz.
     global ultimo_premio_tiempo, ultimo_audio_tiempo
     
     for cambio in cambios:
@@ -127,122 +125,104 @@ def evaluar_premios(documentos_totales, cambios, hora_lectura):
             animal_detectado = str(datos.get("animal", "")).lower()
             postura_detectada = str(datos.get("postura", "")).upper()
             
-            # 1. Comprobamos si hay perro o gato y si se ha sentado
             if animal_detectado in ["dog", "cat"] and postura_detectada == "SENTADO":
                 tiempo_actual = time.time()
                 
-                # 2. ¿Hemos hablado recientemente? (Dentro de la ventana de obediencia)
+                # Comprueba si el animal se ha sentado a raiz de una orden reciente de voz
                 if (tiempo_actual - ultimo_audio_tiempo) <= VENTANA_OBEDIENCIA:
                     
-                    # 3. ¿Ha pasado el cooldown para no atascar el dispensador?
+                    # Comprueba si el motor esta listo para usarse
                     if tiempo_actual - ultimo_premio_tiempo >= COOLDOWN_PREMIOS:
                         ultimo_premio_tiempo = tiempo_actual
                         
-                        # Cortamos la ventana de obediencia a cero para que no reciba dos premios por un solo audio
+                        # Anulamos la ventana actual para evitar dobles premios por la misma orden
                         ultimo_audio_tiempo = 0.0 
                         
-                        print(f"\n🎓 [¡BUEN CHICO!] {animal_detectado.upper()} obedeció tu comando y está SENTADO. ¡Dando premio!")
+                        print(f"\n[IA] {animal_detectado.upper()} obedecio tu comando y esta SENTADO. Dando premio...")
                         try:
-                            print("-> Ángulo: 90° (Abriendo compuerta)")
                             set_angulo(90)
                             time.sleep(1.5)
-                            print("-> Ángulo: 45° (Cerrando compuerta)")
                             set_angulo(45)
                             time.sleep(1.5)
-                            print(f"-> Volviendo a la posición inicial ({ANGULO_INICIAL}°)")
                             set_angulo(ANGULO_INICIAL)
                             time.sleep(1.5)
                             soltar_motor()
-                            print("✅ [DISPENSADOR] Recompensa por obediencia entregada con éxito.")
+                            print("[DISPENSADOR] Recompensa entregada.")
                         except Exception as servo_error:
-                            print(f"❌ [DISPENSADOR] Error en el motor: {servo_error}")
+                            print(f"[DISPENSADOR] Error mecanico: {servo_error}")
                     else:
                         segundos = int(COOLDOWN_PREMIOS - (tiempo_actual - ultimo_premio_tiempo))
                         print(f"\r[INFO] Mascota sentada, pero dispensador en cooldown. Faltan {segundos}s.", end="", flush=True)
 
 
 def main():
-    print("==================================================")
-    print("   PETWATCH CLOUD - MODO ADIESTRAMIENTO ACTIVO    ")
-    print("==================================================")
+    print("Iniciando PETWATCH Edge Node...")
 
     print("Conectando con Google Cloud Pub/Sub...")
     try:
         publisher = pubsub_v1.PublisherClient()
         topic_path = publisher.topic_path(PROJECT_ID, TOPIC_ID)
-        print("-> [OK] Conexión Pub/Sub establecida.")
     except Exception as e:
-        print(f"Error al conectar con Pub/Sub: {e}")
+        print(f"Error critico en Pub/Sub: {e}")
         return
 
     print("Conectando con Google Cloud Firestore...")
     try:
         db = firestore.Client(project=PROJECT_ID, database=DATABASE_ID)
-        print("-> [OK] Conexión Firestore establecida.")
     except Exception as e:
-        print(f"Error al conectar con Firestore: {e}")
+        print(f"Error critico en Firestore: {e}")
         return
 
-    print("Iniciando Raspberry Pi Camera Module v2...")
+    print("Inicializando hardware de camara...")
     try:
         picam2 = Picamera2()
         picam2.configure(picam2.create_video_configuration(
             main={"format": "RGB888", "size": (ANCHO, ALTO)}
         ))
         picam2.start()
-        print("-> [OK] Cámara v2 lista mediante Picamera2.")
     except Exception as cam_error:
-        print(f"Error: No se pudo inicializar la cámara. {cam_error}")
+        print(f"Error al levantar Picamera2: {cam_error}")
         return
 
-    # Escuchadores de base de datos
-    print("📡 [SISTEMA] Activando receptor de Walkie-Talkie...")
+    # Registramos los callbacks para que Firestore trabaje de fondo mediante hilos
     db.collection("comandos_audio").on_snapshot(reproducir_audio)
-    
-    print("📡 [SISTEMA] Activando receptor de Botón Manual...")
     db.collection("comandos_servo").on_snapshot(escuchar_comandos_manuales)
-    
-    print("🧠 [SISTEMA] Activando vigilante de la Inteligencia Artificial (Adiestramiento)...")
     db.collection("historial_mascotas").on_snapshot(evaluar_premios)
 
-    print("\n==================================================")
-    print(" 🤖 [PETWATCH] ¡SISTEMA OPERATIVO Y CONECTADO! ")
-    print("--> Transmitiendo vídeo directo a Google Pub/Sub.")
-    print("--> Esperando que hables a la mascota para ver si obedece.")
-    print("--> Para apagar de forma segura, pulsa Ctrl + C.")
-    print("==================================================\n")
+    print("Sistema operativo. Transmitiendo telemetria y esperando eventos...")
 
     ultimo_envio_ia = 0.0
 
     try:
         while True:
-            # Capturar fotograma
+            # Captura raw a la memoria RAM de la Pi
             frame_bgr = picam2.capture_array("main")
 
-            # Envío de vídeo a la nube a ~5 FPS estables
+            # Limitador de subida a ~5 FPS para no colapsar la red ni agotar la cuota de Google Cloud
             tiempo_actual = time.time()
             if tiempo_actual - ultimo_envio_ia >= 0.2:
+                # Comprimir a JPG es obligatorio para que el payload quepa en los limites de Pub/Sub
                 _, buffer = cv2.imencode('.jpg', frame_bgr)
                 img_bytes = buffer.tobytes()
 
                 try:
                     future = publisher.publish(topic_path, img_bytes)
-                    print(f"\r[CLOUD VÍDEO] Transmitiendo... ID: {future.result()[:15]}...", end="", flush=True)
+                    print(f"\r[VÍDEO] Subiendo frame... ID: {future.result()[:15]}...", end="", flush=True)
                     ultimo_envio_ia = tiempo_actual
                 except Exception as pub_error:
-                    print(f"\nError al enviar a Pub/Sub: {pub_error}")
+                    print(f"\nError de subida a Pub/Sub: {pub_error}")
 
+            # Previene que el bucle while sature el 100% de la CPU
             time.sleep(0.01)
 
     except KeyboardInterrupt:
-        print("\n\n🛑 [SISTEMA] Solicitud de apagado manual detectada.")
+        print("\nApagado manual detectado (Ctrl+C).")
     finally:
-        print("Cerrando recursos del robot de manera segura...")
+        print("Limpiando recursos GPIO y cerrando camara...")
         picam2.stop()
         servo.stop()
         GPIO.cleanup()
-        print("¡Cámara liberada e hilos cerrados correctamente. Robot en reposo!")
-
+        print("Apagado completado.")
 
 if __name__ == "__main__":
     main()
